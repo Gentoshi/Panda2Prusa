@@ -544,27 +544,26 @@ def _apply_supports(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> Non
             cfg.set(prusa_key, v)
 
 
-# -- print quality (preset mode) -------------------------------------------------------------
+# -- wall / infill quality (preset mode) -----------------------------------------------------
 
-# Wall count, infill density, infill pattern and arc fitting are exact or close 1:1 matches
-# between Bambu and PrusaSlicer, so they travel with the model in preset mode, overriding
-# the user's preset values. Speeds and extrusion widths are hardware-specific and stay with
+# Wall count, infill density and infill pattern are exact or close 1:1 matches between
+# Bambu and PrusaSlicer, so they travel with the model in preset mode, overriding the
+# user's preset values. Speeds and extrusion widths are hardware-specific and stay with
 # the preset. An infill pattern with no Prusa equivalent falls back to the preset value
-# (with a warning) rather than being dropped.
+# (with a warning) rather than being dropped. Arc fitting is deliberately NOT
+# transferred - the user's Prusa preset keeps its own value.
 _QUALITY_TRANSFER_KEYS = frozenset({
     "perimeters",
     "fill_density",
     "fill_pattern",
-    "arc_fitting",
 })
 
 
 def _apply_quality(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> None:
-    """Carry the Bambu project's print-quality settings onto ``cfg`` (preset mode).
+    """Carry the Bambu project's wall/infill settings onto ``cfg`` (preset mode).
 
-    Walls, infill and arc fitting. Each key is only written when the project's config
-    actually contains it, so a model that omits a setting keeps the user's preset value
-    for that one.
+    Each key is only written when the project's config actually contains it, so a model
+    that omits a setting keeps the user's preset value for that one.
     """
     by_prusa = {r.prusa: r for r in K.PRINT_RULES}
     for prusa_key in _QUALITY_TRANSFER_KEYS:

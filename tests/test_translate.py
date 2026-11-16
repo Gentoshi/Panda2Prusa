@@ -456,11 +456,12 @@ def test_keep_presets_mode_writes_the_user_presets_unchanged():
     assert c.get("print_settings_id") == "0.20mm SPEED @XLIS 0.4"
     assert c.get("layer_height") == "0.15"  # the user's print preset, not Bambu's 0.2
     assert c.get("gcode_label_objects") == "firmware"
-    # print quality is a close 1:1 match, so it travels with the model (overriding the preset)
+    # wall/infill quality is a close 1:1 match, so it travels with the model (overriding the preset)
     assert c.get("perimeters") == "3"
     assert c.get("fill_density") == "20%"
     assert c.get("fill_pattern") == "stars"  # Bambu tri-hexagon -> Prusa stars
-    assert c.get("arc_fitting") == "emit_center"  # Bambu enable_arc_fitting=1
+    # arc fitting is deliberately not transferred - the Prusa preset keeps its own value
+    assert "arc_fitting" not in c
     # supports are a close feature match, so they travel with the model even in preset mode
     assert c.get("support_material") == "1"
     assert c.get("support_material_auto") == "1"
