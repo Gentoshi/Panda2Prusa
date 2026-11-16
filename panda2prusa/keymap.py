@@ -28,7 +28,6 @@ class Rule:
     percent_base: Optional[str] = None
     # Bambu values that intentionally map to "keep the base value" (no warning).
     quiet: tuple = ()
-    note: str = ""
 
 
 # -- value converters ---------------------------------------------------------------

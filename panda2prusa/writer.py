@@ -33,7 +33,13 @@ from . import ns
 from .paint import transform_states, used_states, PaintError
 from .reader import BambuProject, Part, PLATE_GAP, ROOT_MODEL
 from .transform import Transform
-from .translate import TargetPresets, Translation, translate_object_settings, translate_project
+from .translate import (
+    TargetPresets,
+    Translation,
+    _bed_bounds,
+    translate_object_settings,
+    translate_project,
+)
 
 # Attributes to strip from triangles (production + bambu extensions).
 _DROP_ATTRS = {
@@ -341,6 +347,11 @@ def _used_slots(project: BambuProject, merged: dict) -> set:
     return used
 
 
+def suggest_extruder_map(used: List[int]) -> dict:
+    """Compact sparse filament slots to sequential extruders 1..K."""
+    return {old: i for i, old in enumerate(sorted(used), start=1)}
+
+
 def _compute_extruder_map(project: BambuProject, merged: dict) -> Optional[dict]:
     """Map the filaments actually used to sequential extruders 1..K.
 
@@ -352,7 +363,7 @@ def _compute_extruder_map(project: BambuProject, merged: dict) -> Optional[dict]
     used = _used_slots(project, merged)
     if not used:
         return None
-    mapping = {old: i for i, old in enumerate(sorted(used), start=1)}
+    mapping = suggest_extruder_map(sorted(used))
     if all(old == new for old, new in mapping.items()):
         return None
     return mapping
@@ -594,13 +605,13 @@ def _shifted_transform(text: str, shift: tuple) -> str:
 
 
 def _bed_width(cfg) -> Optional[float]:
-    xs = []
-    for p in cfg.vector("bed_shape") or []:
-        try:
-            xs.append(float(p.split("x")[0]))
-        except (ValueError, IndexError):
-            return None
-    return (max(xs) - min(xs)) if len(xs) >= 3 else None
+    pts = cfg.vector("bed_shape") or []
+    if len(pts) < 3:
+        return None
+    bounds = _bed_bounds(cfg)
+    if bounds is None:
+        return None
+    return bounds[2] - bounds[0]
 
 
 def _add_metadata(project: BambuProject, paint_kinds: set) -> str:
@@ -869,7 +880,7 @@ def _build_layer_ranges(project: BambuProject, selected_items, id_map: dict, ful
             settings = translate_object_settings(rng.settings, full_map, warnings, f"layer range {rng.min_z:g}-{rng.max_z:g}")
             lines.append(f'  <range min_z="{rng.min_z:g}" max_z="{rng.max_z:g}">')
             for k, v in sorted(settings.items()):
-                lines.append(f'   <option opt_key="{k}">{_xml_text(v)}</option>')
+                lines.append(f'   <option opt_key="{k}">{_esc_text(v)}</option>')
             lines.append("  </range>")
             count += 1
         lines.append(" </object>")
@@ -893,10 +904,6 @@ def _build_layer_heights(project: BambuProject, selected_items, id_map: dict):
             continue
         lines.append(f"object_id={out_id}|" + ";".join(values))
     return ("\n".join(lines) + "\n") if lines else None
-
-
-def _xml_text(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _rels_xml(with_thumbnail: bool) -> str:

@@ -12,7 +12,7 @@ from .paint import used_states, PaintError
 from .prusa_config import PrusaConfig, PrusaInstall
 from .reader import read_bambu_3mf, BambuProject
 from .translate import MODE_BAMBU, MODE_REFERENCE, SETTINGS_BAMBU, SETTINGS_PRESETS, TargetPresets
-from .writer import write_prusa_3mf, WriteStats
+from .writer import suggest_extruder_map, write_prusa_3mf, WriteStats
 
 PRINTER_AUTO = "auto"
 PRINTER_BAMBU = "bambu"
@@ -60,11 +60,6 @@ def used_filaments(project: BambuProject) -> List[int]:
     if not used and (project.build_items or codes):
         used.add(1)  # something is printed and it defaults to filament 1
     return sorted(used)
-
-
-def suggest_extruder_map(used: List[int]) -> dict:
-    """Compact sparse filament slots to sequential extruders 1..K."""
-    return {old: i for i, old in enumerate(sorted(used), start=1)}
 
 
 def filament_label(project: BambuProject, slot: int) -> str:

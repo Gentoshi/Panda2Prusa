@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 from . import keymap as K
 from . import prusa_schema as S
 from .bambu_config import BambuConfig
-from .prusa_config import PrusaConfig, enum_values, is_nullable, is_vector, option_type
+from .prusa_config import PrusaConfig, is_nullable, is_vector, option_type
 
 MODE_REFERENCE = "reference"  # printer settings from a PrusaSlicer profile
 MODE_BAMBU = "bambu"  # printer settings translated from the Bambu project
@@ -45,12 +45,17 @@ _STRIP_KEYS = frozenset(
 )
 # Filament vector keys that are not "per filament values" but preset metadata.
 _FILAMENT_VECTOR_KEYS = frozenset(k for k in S.FILAMENT_KEYS if is_vector(k)) - _STRIP_KEYS
-_FILAMENT_SCALAR_KEYS = frozenset(k for k in S.FILAMENT_KEYS if not is_vector(k)) - _STRIP_KEYS
 # Print keys that travel into the project config (preset bookkeeping keys stripped, so a
 # preset's compatible_printers_condition & co. don't surface under PrusaSlicer's Dependencies).
 _PRINT_TRANSFER_KEYS = frozenset(S.PRINT_KEYS) - _STRIP_KEYS
 # Feature extruders that must be >= 1 in PrusaSlicer (0 = "default" only for supports).
 _REGION_EXTRUDER_KEYS = frozenset({"perimeter_extruder", "infill_extruder", "solid_infill_extruder"})
+# Print keys whose values are extruder numbers and must be remapped between filaments.
+_EXTRUDER_REMAP_KEYS = frozenset({
+    "perimeter_extruder", "infill_extruder", "solid_infill_extruder",
+    "support_material_extruder", "support_material_interface_extruder",
+})
+PRINT_RULES_BY_PRUSA = {r.prusa: r for r in K.PRINT_RULES}
 
 
 @dataclass
@@ -89,7 +94,6 @@ class Translation:
     config: PrusaConfig
     warnings: List[str]
     extruders: int
-    slot_of_extruder: Dict[int, int]  # prusa extruder -> bambu filament slot
     wipe_tower_pos: Optional[tuple] = None  # (x, y, rotation) if a wipe tower is used
 
 
@@ -175,6 +179,23 @@ def _wall_sequence(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     return "1" if value == "outer wall/inner wall" else "0"
+
+
+def _special_source_values(meta: Dict[str, str]) -> Dict[str, str]:
+    """Settings that need more than a 1:1 key rename (support style, ironing, wall
+    sequence, overhang speed bands), mapped from their Bambu source values."""
+    out: Dict[str, str] = {}
+    out.update(_support_values(meta.get("support_type"), meta.get("support_style")))
+    out.update(_ironing_values(meta.get("ironing_type")))
+    v = _wall_sequence(meta.get("wall_sequence"))
+    if v is not None:
+        out["external_perimeters_first"] = v
+    for prusa_key, bambu_key in K.OVERHANG_SPEED_RULES:
+        if bambu_key in meta:
+            v = K.positive_or_skip(meta[bambu_key])
+            if v is not None:
+                out[prusa_key] = v
+    return out
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -402,7 +423,7 @@ def translate_project(
     cfg.resize_vectors(n_ext, per_ext_keys)
     cfg.resize_vectors(2, S.MACHINE_LIMITS_KEYS)
     validate(cfg, defaults, warnings)
-    return Translation(cfg, warnings, n_ext, slot_of_extruder, wipe_pos)
+    return Translation(cfg, warnings, n_ext, wipe_pos)
 
 
 # -- print ----------------------------------------------------------------------------------
@@ -421,17 +442,13 @@ def _apply_print_rules(
     keep: frozenset = frozenset(),
 ) -> None:
     """Translate Bambu process settings onto ``cfg``; keys in ``keep`` stay as they are."""
-    extruder_keys = {
-        "perimeter_extruder", "infill_extruder", "solid_infill_extruder",
-        "support_material_extruder", "support_material_interface_extruder",
-    }
     for rule in K.PRINT_RULES:
         if not bambu.has(rule.bambu) or rule.prusa in keep:
             continue
         v = _apply_rule(rule, bambu.scalar(rule.bambu), cfg, warnings)
         if v is None:
             continue
-        if rule.prusa in extruder_keys:
+        if rule.prusa in _EXTRUDER_REMAP_KEYS:
             v = _remap_extruder(v, full_map)
             if v is None:
                 continue
@@ -444,15 +461,14 @@ def _apply_print_rules(
     # Supports: Bambu splits on/off, auto/manual and style across three keys.
     if bambu.has("enable_support"):
         cfg.set("support_material", K.to_bool(bambu.scalar("enable_support") or "0") or "0")
-    for k, v in _support_values(bambu.scalar("support_type"), bambu.scalar("support_style")).items():
+    special = _special_source_values({
+        b: bambu.scalar(b)
+        for b in ("support_type", "support_style", "ironing_type", "wall_sequence",
+                  *(b for _p, b in K.OVERHANG_SPEED_RULES))
+        if bambu.has(b)
+    })
+    for k, v in special.items():
         cfg.set(k, v)
-
-    for k, v in _ironing_values(bambu.scalar("ironing_type")).items():
-        cfg.set(k, v)
-
-    v = _wall_sequence(bambu.scalar("wall_sequence"))
-    if v is not None:
-        cfg.set("external_perimeters_first", v)
 
     seq = bambu.scalar("print_sequence")
     if seq is not None:
@@ -463,12 +479,6 @@ def _apply_print_rules(
         b = K.to_bool(bambu.scalar("only_one_wall_top") or "0")
         if b is not None:
             cfg.set("top_one_perimeter_type", "top" if b == "1" else "none")
-
-    for prusa_key, bambu_key in K.OVERHANG_SPEED_RULES:
-        if bambu.has(bambu_key):
-            v = K.positive_or_skip(bambu.scalar(bambu_key) or "0")
-            if v is not None:
-                cfg.set(prusa_key, v)
 
     if bambu.has("gap_infill_speed"):
         n = _num(bambu.scalar("gap_infill_speed"))
@@ -534,9 +544,8 @@ def _apply_supports(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> Non
         return  # supports off: nothing else to carry over
     for k, v in _support_values(bambu.scalar("support_type"), bambu.scalar("support_style")).items():
         cfg.set(k, v)
-    by_prusa = {r.prusa: r for r in K.PRINT_RULES}
     for prusa_key in _SUPPORT_TRANSFER_KEYS:
-        rule = by_prusa.get(prusa_key)
+        rule = PRINT_RULES_BY_PRUSA.get(prusa_key)
         if rule is None or not bambu.has(rule.bambu):
             continue
         v = _apply_rule(rule, bambu.scalar(rule.bambu), cfg, warnings)
@@ -565,9 +574,8 @@ def _apply_quality(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> None
     Each key is only written when the project's config actually contains it, so a model
     that omits a setting keeps the user's preset value for that one.
     """
-    by_prusa = {r.prusa: r for r in K.PRINT_RULES}
     for prusa_key in _QUALITY_TRANSFER_KEYS:
-        rule = by_prusa.get(prusa_key)
+        rule = PRINT_RULES_BY_PRUSA.get(prusa_key)
         if rule is None or not bambu.has(rule.bambu):
             continue
         v = _apply_rule(rule, bambu.scalar(rule.bambu), cfg, warnings)
@@ -677,13 +685,7 @@ def _apply_filament_rules(
     # defines one (Prusa XL profiles do), so the Bambu filament colours would never
     # show. Give mapped tools their filament colour; untouched tools keep theirs.
     if target.mode == MODE_REFERENCE and target.keep_tool_colours is False:
-        tool_colours = cfg.vector("extruder_colour") or []
-        tool_colours = (tool_colours + [""] * n_ext)[:n_ext]
-        for e in range(1, n_ext + 1):
-            c = colours[e - 1]
-            if c:
-                tool_colours[e - 1] = c
-        cfg.set_vector("extruder_colour", tool_colours)
+        _assign_tool_colours(cfg, n_ext, {e: c for e, c in enumerate(colours, start=1)})
 
     vendors = source("filament_vendor")
     first_slot = slot_of_extruder.get(1) or (min(slot_of_extruder.values()) if slot_of_extruder else None)
@@ -693,14 +695,15 @@ def _apply_filament_rules(
         cfg.set("filament_vendor", target.filament_bases[0].get("filament_vendor"))
 
 
-def _bambu_tool_colours(bambu: BambuConfig, cfg: PrusaConfig, n_ext: int, slot_of_extruder: Dict[int, int]) -> None:
-    """Give mapped tools their Bambu filament colour as the tool colour (PrusaSlicer paints
-    the 3D view with extruder_colour when it is set, which Prusa XL profiles do)."""
-    colours = bambu.filament_colours
+def _assign_tool_colours(cfg: PrusaConfig, n_ext: int, updates: Dict[int, str]) -> None:
+    """Overwrite the listed tools' colours in extruder_colour (tool -> colour).
+
+    PrusaSlicer paints the 3D view with the tool colour when the printer profile
+    defines one, which is how the Bambu filament colours get shown at all."""
     tool_colours = ((cfg.vector("extruder_colour") or []) + [""] * n_ext)[:n_ext]
-    for e, slot in slot_of_extruder.items():
-        if 1 <= e <= n_ext and 0 < slot <= len(colours) and colours[slot - 1]:
-            tool_colours[e - 1] = colours[slot - 1]
+    for e, c in updates.items():
+        if 1 <= e <= n_ext and c:
+            tool_colours[e - 1] = c
     cfg.set_vector("extruder_colour", tool_colours)
 
 
@@ -732,7 +735,11 @@ def _apply_filament_presets(
         ids.append(name)
     cfg.set_vector("filament_settings_id", ids)
     if not target.keep_tool_colours:
-        _bambu_tool_colours(bambu, cfg, n_ext, slot_of_extruder)
+        colours = bambu.filament_colours
+        _assign_tool_colours(
+            cfg, n_ext,
+            {e: colours[slot - 1] for e, slot in slot_of_extruder.items() if 0 < slot <= len(colours)},
+        )
 
 
 # -- printer (bambu mode) -----------------------------------------------------------------
@@ -919,10 +926,6 @@ def translate_object_settings(
     """Map Bambu per-object/part metadata (key -> value) to PrusaSlicer object config."""
     out: Dict[str, str] = {}
     scratch = PrusaConfig(S.DEFAULTS)
-    extruder_keys = {
-        "perimeter_extruder", "infill_extruder", "solid_infill_extruder",
-        "support_material_extruder", "support_material_interface_extruder",
-    }
     for bkey, bval in meta.items():
         if bkey == "extruder":
             v = _remap_extruder(bval, extruder_map)
@@ -939,7 +942,7 @@ def translate_object_settings(
         v = _apply_rule(rule, bval, scratch, warnings)
         if v is None:
             continue
-        if rule.prusa in extruder_keys:
+        if rule.prusa in _EXTRUDER_REMAP_KEYS:
             v = _remap_extruder(v, extruder_map)
             # 0 = "use the object's extruder": PrusaSlicer does that when the key is absent.
             if v is None or v == "0":
@@ -949,18 +952,7 @@ def translate_object_settings(
         b = K.to_bool(meta["enable_support"])
         if b is not None:
             out["support_material"] = b
-    for k, v in _support_values(meta.get("support_type"), meta.get("support_style")).items():
-        out[k] = v
-    for k, v in _ironing_values(meta.get("ironing_type")).items():
-        out[k] = v
-    v = _wall_sequence(meta.get("wall_sequence"))
-    if v is not None:
-        out["external_perimeters_first"] = v
-    for prusa_key, bambu_key in K.OVERHANG_SPEED_RULES:
-        if bambu_key in meta:
-            v = K.positive_or_skip(meta[bambu_key])
-            if v is not None:
-                out[prusa_key] = v
+    out.update(_special_source_values(meta))
     for bkey, pkey in (("flush_into_infill", "wipe_into_infill"), ("flush_into_objects", "wipe_into_objects")):
         if bkey in meta:
             b = K.to_bool(meta[bkey])

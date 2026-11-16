@@ -69,7 +69,6 @@ class Part:
     id: str
     name: str = ""
     extruder: Optional[str] = None
-    matrix: Optional[str] = None
     subtype: str = "normal_part"
     settings: Dict[str, str] = field(default_factory=dict)  # per-part print settings
     text: Optional[Dict[str, str]] = None  # Bambu Studio <text_info> attributes of a text part
@@ -95,7 +94,6 @@ class BuildItem:
     objectid: str
     transform: str  # raw 12-number string as stored in the source
     printable: bool = True
-    element: object = None  # the source lxml <item>
 
 
 @dataclass
@@ -136,23 +134,11 @@ class BambuProject:
     filament_colors: list = field(default_factory=list)  # 1-based slots, "#RRGGBB" strings
     filament_types: list = field(default_factory=list)  # e.g. ["PLA", "PETG", ...]
     config: BambuConfig = field(default_factory=BambuConfig.empty)  # project_settings.config
-    plate_settings: dict = field(default_factory=dict)  # plate index -> {key: value}
     custom_gcodes: dict = field(default_factory=dict)  # plate index -> PlateGCodes
     layer_ranges: dict = field(default_factory=dict)  # object_id -> list[LayerRange]
     layer_heights: dict = field(default_factory=dict)  # object_id -> "z;h;z;h..." profile
     bed_size: tuple = (256.0, 256.0)  # Bambu printable area (width, depth)
     plate_origins: dict = field(default_factory=dict)  # plate index -> (x, y) world origin
-
-    def object_element(self, path: str, objectid: str):
-        """Look up an <object id=..> element in a given model file."""
-        tree = self.root_tree if path in (None, ROOT_MODEL) else self.object_trees.get(path)
-        if tree is None:
-            return None
-        root = tree.getroot()
-        for obj in root.iter(ns.q(ns.CORE, "object")):
-            if obj.get("id") == objectid:
-                return obj
-        return None
 
     @property
     def has_settings(self) -> bool:
@@ -218,7 +204,6 @@ def read_bambu_3mf(path: str) -> BambuProject:
                         objectid=oid,
                         transform=item.get("transform", ""),
                         printable=item.get("printable", "1") not in ("0", "false", "False"),
-                        element=item,
                     )
                 )
 
@@ -233,9 +218,8 @@ def read_bambu_3mf(path: str) -> BambuProject:
         settings_objects: dict = {}
         plate_of_object: dict = {}
         plate_ids: list = []
-        plate_settings: dict = {}
         if MODEL_SETTINGS in names:
-            settings_objects, plate_of_object, plate_ids, plate_settings = _parse_model_settings(
+            settings_objects, plate_of_object, plate_ids = _parse_model_settings(
                 z.read(MODEL_SETTINGS)
             )
 
@@ -274,7 +258,6 @@ def read_bambu_3mf(path: str) -> BambuProject:
         filament_colors=filament_colors,
         filament_types=filament_types,
         config=config,
-        plate_settings=plate_settings,
         custom_gcodes=custom_gcodes,
         layer_ranges=layer_ranges,
         layer_heights=layer_heights,
@@ -331,7 +314,6 @@ def _parse_model_settings(data: bytes):
                     id=part.get("id", ""),
                     name=pm.get("name", ""),
                     extruder=pm.get("extruder"),
-                    matrix=pm.get("matrix"),
                     subtype=part.get("subtype", "normal_part") or "normal_part",
                     settings={k: v for k, v in pm.items() if k not in _NON_SETTING_KEYS},
                     text=dict(text_el.attrib) if text_el is not None else None,
@@ -341,7 +323,6 @@ def _parse_model_settings(data: bytes):
 
     plate_of_object: dict = {}
     plate_ids: list = []
-    plate_settings: dict = {}
     for idx, plate in enumerate(root.findall("plate"), start=1):
         meta = _metadata_dict(plate)
         plate_no = idx
@@ -353,16 +334,11 @@ def _parse_model_settings(data: bytes):
                 except ValueError:
                     pass
         plate_ids.append(plate_no)
-        plate_settings[plate_no] = {
-            k: v for k, v in meta.items()
-            if k in ("bed_type", "print_sequence", "spiral_mode", "first_layer_print_sequence",
-                     "other_layers_print_sequence", "plater_name")
-        }
         for inst in plate.findall("model_instance"):
             for md in inst.findall("metadata"):
                 if md.get("key") == "object_id" and md.get("value"):
                     plate_of_object[md.get("value")] = plate_no
-    return settings_objects, plate_of_object, sorted(set(plate_ids)), plate_settings
+    return settings_objects, plate_of_object, sorted(set(plate_ids))
 
 
 def _parse_custom_gcodes(data: bytes) -> dict:

@@ -280,7 +280,7 @@ pip install pytest
 pytest
 ```
 
-The option schema in `panda2prusa/prusa_schema.py` / `bambu_schema.py` is generated from
+The option schema in `panda2prusa/prusa_schema.py` is generated from
 the slicer sources; regenerate for a new slicer version with
 `python tools/gen_schema.py --prusa-ref version_2.9.7 --prusa-defaults defaults.ini`
 (`defaults.ini` from `prusa-slicer-console --save defaults.ini`).

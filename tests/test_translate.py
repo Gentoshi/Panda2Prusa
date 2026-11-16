@@ -4,7 +4,7 @@ import pytest
 
 from panda2prusa import prusa_schema as S
 from panda2prusa.bambu_config import BambuConfig
-from panda2prusa.prusa_config import PrusaConfig, enum_values, is_vector
+from panda2prusa.prusa_config import PrusaConfig, is_vector
 from panda2prusa.translate import (
     MODE_BAMBU,
     MODE_REFERENCE,

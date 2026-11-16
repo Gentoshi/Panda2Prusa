@@ -892,9 +892,6 @@ EXTRUDER_KEYS = frozenset((
     "travel_lift_before_obstacle", "travel_max_lift", "travel_ramping_lift", "travel_slope",
     "wipe",
 ))
-PROJECT_KEYS = frozenset((
-    "colorprint_heights", "wiping_volumes_matrix", "wiping_volumes_use_custom_matrix",
-))
 OBJECT_KEYS = frozenset((
     "brim_separation", "brim_type", "brim_width", "dont_support_bridges",
     "elefant_foot_compensation", "extrusion_width", "first_layer_acceleration_over_raft",

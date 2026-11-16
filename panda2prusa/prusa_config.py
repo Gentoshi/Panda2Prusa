@@ -41,11 +41,6 @@ def is_nullable(key: str) -> bool:
     return bool(info and info[1])
 
 
-def enum_values(key: str) -> Optional[tuple]:
-    info = S.OPTIONS.get(key)
-    return info[2] if info else None
-
-
 # -- string escaping (mirrors libslic3r/Config.cpp) -----------------------------
 
 def escape_string(s: str) -> str:
@@ -270,9 +265,6 @@ class PrusaConfig:
             lines.append(f"; {k} = {self._d[k]}")
         return "\n".join(lines) + "\n"
 
-    def to_ini_text(self) -> str:
-        return "".join(f"{k} = {self._d[k]}\n" for k in sorted(self._d))
-
 
 # -- an installed PrusaSlicer -----------------------------------------------------
 
@@ -297,7 +289,6 @@ def parse_ini_sections(text: str) -> dict:
     return sections
 
 
-PRESET_KINDS = ("print", "filament", "printer")
 _META_KEYS = {"renamed_from", "alias", "inherits"}
 
 
