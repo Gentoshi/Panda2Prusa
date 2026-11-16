@@ -144,6 +144,7 @@ def _cmd_convert(args) -> int:
         keep_tool_colours=args.keep_tool_colours,
         prusa_config_dir=args.prusa_config_dir,
         plate_layout=PLATES_BEDS if args.plates_as_beds else PLATES_SPLIT,
+        v3_native=args.prusaslicer3,
     )
     s = result.stats
     print(f"Converted: {args.input}")
@@ -179,6 +180,8 @@ def _cmd_convert(args) -> int:
             print(f"   editable text parts:                {s.text_volumes}")
     else:
         print(f"Settings:             not converted ({result.target_description})")
+    if args.prusaslicer3 and s.settings_written:
+        print("   v3 native:           PrusaSlicer3_project.json written (opens natively in PrusaSlicer 3.x)")
     for w in s.warnings:
         print(f"note: {w}", file=sys.stderr)
     if s.objects_written == 0:
@@ -237,6 +240,14 @@ def build_parser() -> argparse.ArgumentParser:
              "apply the Bambu filament colours as tool colours",
     )
     g.add_argument(
+        "--prusaslicer3",
+        action="store_true",
+        help="also write the PrusaSlicer 3.x native project file so the output opens "
+             "natively in PrusaSlicer 3.x with full settings (the output keeps working "
+             "in 2.9). Requires settings translation (not --no-settings). Embeds the "
+             "Prusa XL+ 5T printer identity (model-level, not machine-level)",
+    )
+    g.add_argument(
         "--no-settings",
         action="store_true",
         help="geometry, extruders and painting only; do not write any slicer settings",
@@ -261,6 +272,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    # Windows consoles default to cp1252, which cannot encode characters preset names
+    # may contain (e.g. ★). Replace them instead of crashing after the file is written.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:
+                pass
     args = build_parser().parse_args(argv)
     if args.list_printers:
         return _cmd_list_printers(args)
