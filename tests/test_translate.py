@@ -456,7 +456,14 @@ def test_keep_presets_mode_writes_the_user_presets_unchanged():
     assert c.get("print_settings_id") == "0.20mm SPEED @XLIS 0.4"
     assert c.get("layer_height") == "0.15"  # the user's print preset, not Bambu's 0.2
     assert c.get("gcode_label_objects") == "firmware"
-    assert "fill_density" not in c and "support_material" not in c  # nothing from Bambu's process
+    # wall/infill quality is a close 1:1 match, so it travels with the model (overriding the preset)
+    assert c.get("perimeters") == "3"
+    assert c.get("fill_density") == "20%"
+    assert c.get("fill_pattern") == "stars"  # Bambu tri-hexagon -> Prusa stars
+    # supports are a close feature match, so they travel with the model even in preset mode
+    assert c.get("support_material") == "1"
+    assert c.get("support_material_auto") == "1"
+    assert c.get("support_material_style") == "organic"  # Bambu tree -> Prusa organic
     assert c.vector("filament_settings_id")[:2] == ["Prusament PLA @XLIS", "Prusament PETG @XLIS"]
     assert c.vector("temperature")[:2] == ["215", "240"]  # the presets' values, not Bambu's
     assert c.vector("filament_retract_length")[:2] == ["nil", "1.1"]
@@ -473,6 +480,32 @@ def test_keep_presets_mode_can_leave_tool_colours_alone():
     t.keep_tool_colours = True
     tr = translate_project(_bambu(), {1: 1, 3: 2}, t, [1, 3])
     assert tr.config.vector("extruder_colour") == ["#FF8000", "#DB5182", "#3EC0FF", "#FF4F4F", "#FBEB7D"]
+
+
+def test_keep_presets_mode_supports_off_writes_nothing():
+    tr = translate_project(
+        _bambu(enable_support="0"), {1: 1, 3: 2}, _reference_target(settings_mode=SETTINGS_PRESETS), [1, 3]
+    )
+    assert tr.config.get("support_material") == "0"
+    assert "support_material_style" not in tr.config
+    assert "support_tree_angle" not in tr.config
+
+
+def test_keep_presets_mode_quality_falls_back_for_unknown_pattern():
+    b = _bambu(sparse_infill_pattern="monotonicline")  # no Prusa equivalent
+    tr = translate_project(b, {1: 1, 3: 2}, _reference_target(settings_mode=SETTINGS_PRESETS), [1, 3])
+    assert "fill_pattern" not in tr.config  # preset set none; the unknown pattern is dropped
+    assert any("sparse_infill_pattern" in w for w in tr.warnings)
+
+
+def test_keep_presets_mode_quality_absent_keys_keep_preset():
+    b = _bambu()
+    for k in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern"):
+        del b.raw[k]
+    tr = translate_project(b, {1: 1, 3: 2}, _reference_target(settings_mode=SETTINGS_PRESETS), [1, 3])
+    assert "perimeters" not in tr.config
+    assert "fill_density" not in tr.config
+    assert "fill_pattern" not in tr.config
 
 
 def test_keep_presets_mode_needs_presets():

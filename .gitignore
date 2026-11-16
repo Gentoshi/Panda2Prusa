@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 out_*.3mf
 *_prusa.3mf
+# Test model inputs (large binaries, not source)
+Diamondback_Snake_Bambu_AutotreeCriticalSupports.3mf
+3Deep+Caterpiller+(KEYCHAIN).3mf
 .pytest_cache/
 build/
 dist/
