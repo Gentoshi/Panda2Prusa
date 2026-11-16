@@ -7,6 +7,25 @@
 [![Stars](https://img.shields.io/github/stars/CupsOhJoe/Panda2Prusa?style=flat&label=stars)](https://github.com/CupsOhJoe/Panda2Prusa/stargazers)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-ffdd00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/cupsohjoe)
 
+## This fork
+
+A fork of [CupsOhJoe/Panda2Prusa](https://github.com/CupsOhJoe/Panda2Prusa). It carries more of
+the model's own settings into the converted file and fixes two bugs:
+
+- **Faster on big models** — the mesh writer builds the 3MF as text and writes it in one pass
+  instead of one object per triangle, so large heavily-painted models no longer hang (a
+  ~1.8M-triangle, ~99%-painted model converts in about 30 seconds).
+- **Colors fixed** — Bambu's 8-digit `#RRGGBBAA` tool colors were silently poisoning
+  PrusaSlicer's whole color vector (it rejects the entire list if a single entry isn't 7 chars),
+  rendering every tool head black. Colors are now normalized to `#RRGGBB` and apply on open.
+- **Supports carry over** — in the default *keep my presets* mode, the model's supports now
+  transfer: Bambu tree supports become PrusaSlicer *organic* supports (threshold, spacing,
+  interface and tree-branch geometry). Speeds, widths and the support filament stay with your preset.
+- **Walls & infill carry over** — perimeters, infill density and infill pattern are close 1:1
+  matches, so they transfer too and override your preset's values.
+
+Everything else works as in the upstream; the full feature list is below.
+
 Convert **Bambu Studio / OrcaSlicer** `.3mf` project files into **PrusaSlicer**
 `.3mf` project files. The converted file opens in PrusaSlicer on your own printer with
 your own print and filament presets, the model's parts on the right tools in the right
