@@ -22,7 +22,6 @@ ranges and variable layer height profiles, and the wipe tower position.
 
 from __future__ import annotations
 
-import json
 import zipfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -30,7 +29,7 @@ from xml.sax.saxutils import quoteattr
 
 import lxml.etree as ET
 
-from . import ns, v3project
+from . import ns
 from .paint import transform_states, used_states, PaintError
 from .reader import BambuProject, Part, PLATE_GAP, ROOT_MODEL
 from .transform import Transform
@@ -400,17 +399,13 @@ def write_prusa_3mf(
     compact_extruders: bool = True,
     target: Optional[TargetPresets] = None,
     translate_settings: bool = True,
-    v3_native: bool = False,
 ) -> WriteStats:
     """Write ``project`` as a PrusaSlicer 3mf.
 
     ``target`` says which PrusaSlicer printer/print/filament presets the translated
     settings are layered on (see ``translate.TargetPresets``); None means "translate
     the Bambu printer settings too". ``translate_settings=False`` writes geometry,
-    extruders and painting only (the 1.0 behaviour). ``v3_native`` additionally
-    writes the PrusaSlicer 3.x native project file (``Metadata/PrusaSlicer3_project.json``)
-    and marks the model ``Application`` as 3.x, so PrusaSlicer 3 opens it through its
-    native loader; the legacy files are still written, so 2.9 keeps working.
+    extruders and painting only (the 1.0 behaviour).
     """
     objs, src_path = _collect_objects(project)
     warnings: List[str] = []
@@ -463,54 +458,13 @@ def write_prusa_3mf(
     elif translate_settings:
         warnings.append("No Metadata/project_settings.config in the source; settings were not converted.")
 
-    # PrusaSlicer 3.x routes a 3MF to its legacy (2.x) project loader — the only path
-    # that reads Metadata/Slic3r_PE.config — when the Application metadata is
-    # "PrusaSlicer-<ver>" with ver <= 2.99.1 (is_old_stored_version in Model3mf.cpp).
-    # With v3_native we flip it to a 3.x version so 3.x uses its native loader and
-    # reads Metadata/PrusaSlicer3_project.json instead (2.9.7 ignores that file).
-    v3_json = None
-    if v3_native and translation is None:
-        warnings.append(
-            "v3 native output needs translated settings; wrote the legacy 2.9-compatible format only"
-        )
-    application = v3project.LEGACY_APPLICATION
-    if v3_native and translation is not None:
-        application = v3project.V3_APPLICATION
-        v3_objects = []
-        for key, mo in merged.items():
-            # Object default extruder: the object-level value (remapped, as the
-            # legacy model config does), falling back to the first volume's.
-            ext = None
-            so = project.settings_objects.get(key[1])
-            if so and so.extruder:
-                try:
-                    ext = int(full_map.get(int(so.extruder), int(so.extruder)))
-                except ValueError:
-                    ext = None
-            if ext is None:
-                for v in mo.volumes:
-                    if v.extruder:
-                        try:
-                            ext = int(v.extruder)
-                        except ValueError:
-                            pass
-                        break
-            v3_objects.append((int(id_map[key]), ext or 1))
-        tower = None
-        if translation.wipe_tower_pos and translation.config.get("wipe_tower") == "1":
-            x, y, rot = translation.wipe_tower_pos
-            tower = (float(x), float(y), float(rot))
-        v3_json = v3project.build_project_json(
-            translation.config, v3_objects, translation.extruders, tower
-        )
-
     # Build the output model as a string. The mesh is never held as an lxml tree: for a
     # heavily-painted model that tree is millions of element objects and is what stalls
     # serialization and blows memory. String chunks are cheap to build and to write.
     paint_kinds: set = set()
     for mo in merged.values():
         paint_kinds |= mo.paint_kinds
-    metadata_xml = _add_metadata(project, paint_kinds, application)
+    metadata_xml = _add_metadata(project, paint_kinds)
 
     painted_total = 0
     volumes_total = 0
@@ -603,8 +557,6 @@ def write_prusa_3mf(
             z.writestr(LAYER_RANGES_FILE, layer_ranges_xml)
         if layer_heights_txt:
             z.writestr(LAYER_HEIGHTS_FILE, layer_heights_txt)
-        if v3_json is not None:
-            z.writestr(v3project.V3_PROJECT_FILE, json.dumps(v3_json, separators=(",", ":")))
         if thumb:
             z.writestr("Metadata/thumbnail.png", thumb)
 
@@ -651,7 +603,7 @@ def _bed_width(cfg) -> Optional[float]:
     return (max(xs) - min(xs)) if len(xs) >= 3 else None
 
 
-def _add_metadata(project: BambuProject, paint_kinds: set, application: str = v3project.LEGACY_APPLICATION) -> str:
+def _add_metadata(project: BambuProject, paint_kinds: set) -> str:
     """The <model> metadata block as an XML string."""
     metas = ['<metadata name="slic3rpe:Version3mf">1</metadata>']
     for attr, (_qname, version_key) in _PAINT_ATTRS.items():
@@ -664,13 +616,12 @@ def _add_metadata(project: BambuProject, paint_kinds: set, application: str = v3
             title = md.text
     if title:
         metas.append(f'<metadata name="Title">{_esc_text(title)}</metadata>')
-    # See the comment at the call site: PrusaSlicer 3.x routes a 3MF to its legacy
-    # (2.x) project loader — the only path that reads Metadata/Slic3r_PE.config —
-    # when the Application metadata is "PrusaSlicer-<ver>" with ver <= 2.99.1
-    # (is_old_stored_version in Model3mf.cpp). Any other value (e.g. "panda2prusa")
-    # makes 3.x treat the file as third-party geometry and drop all settings
-    # ("does not contain PrusaSlicer configuration").
-    metas.append(f'<metadata name="Application">{application}</metadata>')
+    # PrusaSlicer 3.x routes a 3MF to its legacy (2.x) project loader — the only path
+    # that reads Metadata/Slic3r_PE.config — when the Application metadata is
+    # "PrusaSlicer-<ver>" with ver <= 2.99.1 (is_old_stored_version in Model3mf.cpp).
+    # Any other value (e.g. "panda2prusa") makes 3.x treat the file as third-party
+    # geometry and drop all settings ("does not contain PrusaSlicer configuration").
+    metas.append('<metadata name="Application">PrusaSlicer-2.9.7</metadata>')
     return "\n".join("  " + m for m in metas)
 
 

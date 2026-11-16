@@ -25,8 +25,7 @@ the model's own settings into the converted file and fixes two bugs:
   matches, so they transfer too and override your preset's values.
 - **Opens in PrusaSlicer 3.x with settings** — the output is tagged as a 2.9.7 project, so
   PrusaSlicer 3.x loads it through its legacy path and applies all settings (without this,
-  3.x only read the geometry). `--prusaslicer3` additionally writes the 3.x-native project
-  file so 3.x opens it through its native loader; the file keeps working in 2.9 either way.
+  3.x only read the geometry).
 
 Everything else works as in the upstream; the full feature list is below.
 
@@ -180,7 +179,6 @@ python -m panda2prusa [options] input.3mf output.3mf
 | `--keep-extruders` | Keep the Bambu slot numbers. No renumbering, no prompt. |
 | `--printer WHICH` | Printer profile for the output: `auto` (default), an installed preset name, a `.ini`/`.3mf` file, or `bambu`. See the table above. |
 | `--bambu-settings` | Translate the Bambu process and filament settings into project presets instead of keeping the presets selected in PrusaSlicer. |
-| `--prusaslicer3` | Also write the PrusaSlicer 3.x-native project file so the output opens natively in PrusaSlicer 3.x with full settings (it keeps working in 2.9). Needs settings (not `--no-settings`); embeds the Prusa XL+ 5T printer identity (model-level, not machine-level). |
 | `--no-settings` | Geometry, extruders and painting only; no slicer settings. |
 | `--no-base-presets` | With `--bambu-settings` (implied): layer the Bambu settings on PrusaSlicer defaults instead of on your currently selected print and filament presets. |
 | `--keep-tool-colours` | Keep the printer profile's extruder colours instead of the Bambu filament colours. |
@@ -201,7 +199,6 @@ python -m panda2prusa sign.3mf sign_prusa.3mf --printer "Original Prusa XL - 2T 
 python -m panda2prusa sign.3mf sign_prusa.3mf --printer my_xl.ini   # printer from an exported config
 python -m panda2prusa sign.3mf sign_prusa.3mf --printer bambu       # PC without PrusaSlicer
 python -m panda2prusa sign.3mf sign_prusa.3mf --bambu-settings      # Bambu process + filaments as project presets
-python -m panda2prusa sign.3mf sign_prusa.3mf --prusaslicer3        # also opens natively in PrusaSlicer 3.x
 python -m panda2prusa sign.3mf sign_prusa.3mf --no-settings         # geometry only
 python -m panda2prusa --info sign.3mf
 ```

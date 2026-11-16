@@ -265,7 +265,6 @@ def convert_file(
     prusa_config_dir: Optional[str] = None,
     plate_layout: str = PLATES_SPLIT,
     bambu_settings: bool = False,
-    v3_native: bool = False,
 ) -> ConversionResult:
     """Convert a Bambu/Orca .3mf at ``input_path`` to a Prusa .3mf at ``output_path``.
 
@@ -279,8 +278,7 @@ def convert_file(
     ``printer`` selects the PrusaSlicer printer profile.
     When several plates are converted, ``plate_layout`` decides between one file per
     plate (``output_plateN.3mf``, the default) and one file with each plate on its own
-    PrusaSlicer bed (``"beds"``, PrusaSlicer 2.9+). ``v3_native`` additionally writes
-    the PrusaSlicer 3.x native project file so the output opens natively in 3.x.
+    PrusaSlicer bed (``"beds"``, PrusaSlicer 2.9+).
     """
     project = read_bambu_3mf(input_path)
 
@@ -315,7 +313,6 @@ def convert_file(
             compact_extruders=compact_extruders,
             target=target,
             translate_settings=settings,
-            v3_native=v3_native,
         )
         outputs.append(path)
         if stats is None:
