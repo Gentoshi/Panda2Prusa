@@ -7,7 +7,7 @@ so this script parses them and emits plain Python tables. Run it when a new
 slicer version changes the option set:
 
     python tools/gen_schema.py --cache build/slicer-src \\
-        --prusa-ref version_2.9.6 \\
+        --prusa-ref version_2.9.7 \\
         --prusa-defaults defaults.ini   # from: prusa-slicer-console --save defaults.ini
 
 Sources are downloaded from GitHub into the cache directory unless already there.
@@ -259,7 +259,7 @@ def write_prusa(cache: str, ref: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache", default=os.path.join(os.path.dirname(HERE), "build", "slicer-src"))
-    ap.add_argument("--prusa-ref", default="version_2.9.6")
+    ap.add_argument("--prusa-ref", default="version_2.9.7")
     ap.add_argument("--prusa-defaults", help="ini written by `prusa-slicer-console --save FILE` (optional)")
     args = ap.parse_args()
     for name, path in PRUSA_FILES.items():
