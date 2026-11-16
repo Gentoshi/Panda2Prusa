@@ -456,10 +456,11 @@ def test_keep_presets_mode_writes_the_user_presets_unchanged():
     assert c.get("print_settings_id") == "0.20mm SPEED @XLIS 0.4"
     assert c.get("layer_height") == "0.15"  # the user's print preset, not Bambu's 0.2
     assert c.get("gcode_label_objects") == "firmware"
-    # wall/infill quality is a close 1:1 match, so it travels with the model (overriding the preset)
+    # print quality is a close 1:1 match, so it travels with the model (overriding the preset)
     assert c.get("perimeters") == "3"
     assert c.get("fill_density") == "20%"
     assert c.get("fill_pattern") == "stars"  # Bambu tri-hexagon -> Prusa stars
+    assert c.get("arc_fitting") == "emit_center"  # Bambu enable_arc_fitting=1
     # supports are a close feature match, so they travel with the model even in preset mode
     assert c.get("support_material") == "1"
     assert c.get("support_material_auto") == "1"
@@ -506,6 +507,23 @@ def test_keep_presets_mode_quality_absent_keys_keep_preset():
     assert "perimeters" not in tr.config
     assert "fill_density" not in tr.config
     assert "fill_pattern" not in tr.config
+
+
+def test_keep_presets_mode_strips_preset_bookkeeping_keys():
+    # a preset's compatibility/printhost bookkeeping must not leak into the project
+    # config (it surfaces under PrusaSlicer's "Dependencies")
+    t = _reference_target(settings_mode=SETTINGS_PRESETS)
+    t.print_base = PrusaConfig(
+        {
+            "layer_height": "0.15",
+            "compatible_printers_condition": "printer_model == 'BBL X1C'",
+            "printhost_user": "someone",
+        }
+    )
+    tr = translate_project(_bambu(), {1: 1, 3: 2}, t, [1, 3])
+    assert "compatible_printers_condition" not in tr.config
+    assert "printhost_user" not in tr.config
+    assert tr.config.get("layer_height") == "0.15"  # ordinary keys still travel
 
 
 def test_keep_presets_mode_needs_presets():

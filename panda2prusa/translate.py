@@ -46,6 +46,9 @@ _STRIP_KEYS = frozenset(
 # Filament vector keys that are not "per filament values" but preset metadata.
 _FILAMENT_VECTOR_KEYS = frozenset(k for k in S.FILAMENT_KEYS if is_vector(k)) - _STRIP_KEYS
 _FILAMENT_SCALAR_KEYS = frozenset(k for k in S.FILAMENT_KEYS if not is_vector(k)) - _STRIP_KEYS
+# Print keys that travel into the project config (preset bookkeeping keys stripped, so a
+# preset's compatible_printers_condition & co. don't surface under PrusaSlicer's Dependencies).
+_PRINT_TRANSFER_KEYS = frozenset(S.PRINT_KEYS) - _STRIP_KEYS
 # Feature extruders that must be >= 1 in PrusaSlicer (0 = "default" only for supports).
 _REGION_EXTRUDER_KEYS = frozenset({"perimeter_extruder", "infill_extruder", "solid_infill_extruder"})
 
@@ -368,7 +371,7 @@ def translate_project(
 
     # --- print and filament layers --------------------------------------------------
     if target.keeps_presets:
-        cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in S.PRINT_KEYS])
+        cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in _PRINT_TRANSFER_KEYS])
         cfg.set("print_settings_id", target.print_base_name)
         _apply_filament_presets(bambu, cfg, n_ext, slot_of_extruder, target)
         # Supports are a close feature match (Bambu tree -> Prusa organic), so they
@@ -380,7 +383,7 @@ def translate_project(
         _apply_quality(bambu, cfg, warnings)
     else:
         if target.print_base is not None:
-            cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in S.PRINT_KEYS])
+            cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in _PRINT_TRANSFER_KEYS])
         keep = _PRINTER_COUPLED_PRINT_KEYS if target.print_base is not None else frozenset()
         _apply_print_rules(bambu, cfg, full_map, warnings, keep=keep)
         cfg.set("print_settings_id", bambu.scalar("print_settings_id") or "Bambu Studio project")
@@ -541,25 +544,27 @@ def _apply_supports(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> Non
             cfg.set(prusa_key, v)
 
 
-# -- wall / infill quality (preset mode) ----------------------------------------------------
+# -- print quality (preset mode) -------------------------------------------------------------
 
-# Wall count, infill density and infill pattern are exact or close 1:1 matches between
-# Bambu and PrusaSlicer, so they travel with the model in preset mode, overriding the
-# user's preset values. Speeds and extrusion widths are hardware-specific and stay with
+# Wall count, infill density, infill pattern and arc fitting are exact or close 1:1 matches
+# between Bambu and PrusaSlicer, so they travel with the model in preset mode, overriding
+# the user's preset values. Speeds and extrusion widths are hardware-specific and stay with
 # the preset. An infill pattern with no Prusa equivalent falls back to the preset value
 # (with a warning) rather than being dropped.
 _QUALITY_TRANSFER_KEYS = frozenset({
     "perimeters",
     "fill_density",
     "fill_pattern",
+    "arc_fitting",
 })
 
 
 def _apply_quality(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> None:
-    """Carry the Bambu project's wall/infill settings onto ``cfg`` (preset mode).
+    """Carry the Bambu project's print-quality settings onto ``cfg`` (preset mode).
 
-    Each key is only written when the project's config actually contains it, so a model
-    that omits a setting keeps the user's preset value for that one.
+    Walls, infill and arc fitting. Each key is only written when the project's config
+    actually contains it, so a model that omits a setting keeps the user's preset value
+    for that one.
     """
     by_prusa = {r.prusa: r for r in K.PRINT_RULES}
     for prusa_key in _QUALITY_TRANSFER_KEYS:
