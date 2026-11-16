@@ -42,13 +42,19 @@ _DROP_ATTRS = {
     "face_property",
 }
 
-# Bambu per-triangle paint attribute -> PrusaSlicer attribute, painting-version metadata.
+# Bambu per-triangle paint attribute -> (PrusaSlicer attribute, painting-version metadata).
+# The output attribute uses the ``slic3rpe:`` prefix declared on the <model> element; the
+# mesh is emitted as a string, so we write the prefixed name directly rather than a Clark
+# qname that lxml would have expanded for us.
 _PAINT_ATTRS = {
-    "paint_color": (ns.q(ns.SLIC3RPE, "mmu_segmentation"), "slic3rpe:MmPaintingVersion"),
-    "paint_supports": (ns.q(ns.SLIC3RPE, "custom_supports"), "slic3rpe:FdmSupportsPaintingVersion"),
-    "paint_seam": (ns.q(ns.SLIC3RPE, "custom_seam"), "slic3rpe:SeamPaintingVersion"),
-    "paint_fuzzy_skin": (ns.q(ns.SLIC3RPE, "fuzzy_skin"), "slic3rpe:FuzzySkinPaintingVersion"),
+    "paint_color": ("slic3rpe:mmu_segmentation", "slic3rpe:MmPaintingVersion"),
+    "paint_supports": ("slic3rpe:custom_supports", "slic3rpe:FdmSupportsPaintingVersion"),
+    "paint_seam": ("slic3rpe:custom_seam", "slic3rpe:SeamPaintingVersion"),
+    "paint_fuzzy_skin": ("slic3rpe:fuzzy_skin", "slic3rpe:FuzzySkinPaintingVersion"),
 }
+# The one paint attribute whose leaf states are extruder indices and must be renumbered
+# when filament slots are remapped (the others are copied verbatim).
+_MMU_SEG_ATTR = "slic3rpe:mmu_segmentation"
 
 CONTENT_TYPES_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -102,10 +108,31 @@ class _Volume:
 
 @dataclass
 class _MergedObject:
-    element: object
+    """A build object's merged mesh, held as string chunks (not an lxml tree).
+
+    Building the mesh as text instead of millions of element objects is what keeps
+    heavily-painted models from blowing up memory and stalling on serialization.
+    ``tris`` is a list of ``(base, paints)`` where ``base`` is the ``<triangle`` tag
+    through its non-paint attributes and ``paints`` is a list of ``(name, value)``
+    paint attributes (empty when the triangle is not painted).
+    """
+
+    name: str
+    vert_xml: str  # inner content of <vertices>
+    tris: list  # list[(base: str, paints: list[(name, value)])]
     volumes: list = field(default_factory=list)
     painted: int = 0
     paint_kinds: set = field(default_factory=set)
+
+    def triangle_lines(self) -> str:
+        out = []
+        append = out.append
+        for base, paints in self.tris:
+            if paints:
+                append(base + " " + " ".join(f'{n}="{v}"' for n, v in paints) + "/>")
+            else:
+                append(base + "/>")
+        return "\n".join(out)
 
 
 def _key(path: str, objectid: str) -> tuple:
@@ -168,6 +195,18 @@ def _fmt(v: float) -> str:
     return repr(v)
 
 
+def _esc_attr(s: str) -> str:
+    """Escape a value for use inside a double-quoted XML attribute."""
+    return (
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
+def _esc_text(s: str) -> str:
+    """Escape a value for use as XML element text."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _merge_object(root_key, objs, src_path, parts: list) -> Optional[_MergedObject]:
     """Merge a build object's component tree into a single-mesh <object> element."""
     leaves = _flatten_leaves(root_key, objs, src_path)
@@ -184,16 +223,14 @@ def _merge_object(root_key, objs, src_path, parts: list) -> Optional[_MergedObje
             return parts[leaf_idx]
         return None
 
-    out_obj = ET.Element(ns.q(ns.CORE, "object"))
-    out_obj.set("type", "model")
     src_root = objs[root_key]
-    if src_root.get("name"):
-        out_obj.set("name", src_root.get("name"))
-    mesh = ET.SubElement(out_obj, ns.q(ns.CORE, "mesh"))
-    out_verts = ET.SubElement(mesh, ns.q(ns.CORE, "vertices"))
-    out_tris = ET.SubElement(mesh, ns.q(ns.CORE, "triangles"))
+    name = src_root.get("name") or ""
+    merged = _MergedObject(name=name, vert_xml="", tris=[])
+    vert_lines: list = []
+    vert_append = vert_lines.append
+    tri_items: list = merged.tris
+    tri_append = tri_items.append
 
-    merged = _MergedObject(element=out_obj)
     vbase = 0
     tri_count = 0
     for leaf_idx, (leaf_key, xf) in enumerate(leaves):
@@ -207,30 +244,30 @@ def _merge_object(root_key, objs, src_path, parts: list) -> Optional[_MergedObje
         nverts = 0
         if verts is not None:
             for v in verts.findall(ns.q(ns.CORE, "vertex")):
-                nv = ET.SubElement(out_verts, ns.q(ns.CORE, "vertex"))
                 if identity:
-                    nv.set("x", v.get("x", "0"))
-                    nv.set("y", v.get("y", "0"))
-                    nv.set("z", v.get("z", "0"))
+                    x = v.get("x", "0")
+                    y = v.get("y", "0")
+                    z = v.get("z", "0")
                 else:
-                    x, y, z = xf.apply_point(
+                    px, py, pz = xf.apply_point(
                         float(v.get("x", "0")), float(v.get("y", "0")), float(v.get("z", "0"))
                     )
-                    nv.set("x", _fmt(x))
-                    nv.set("y", _fmt(y))
-                    nv.set("z", _fmt(z))
+                    x, y, z = _fmt(px), _fmt(py), _fmt(pz)
+                vert_append(f'<vertex x="{x}" y="{y}" z="{z}"/>')
                 nverts += 1
 
         firstid = tri_count
         if tris is not None:
             for t in tris.findall(ns.q(ns.CORE, "triangle")):
-                nt = ET.SubElement(out_tris, ns.q(ns.CORE, "triangle"))
                 v1, v2, v3 = t.get("v1"), t.get("v2"), t.get("v3")
                 if flip:
                     v1, v2 = v2, v1
-                nt.set("v1", str(int(v1) + vbase))
-                nt.set("v2", str(int(v2) + vbase))
-                nt.set("v3", str(int(v3) + vbase))
+                attrs = [
+                    f'v1="{int(v1) + vbase}"',
+                    f'v2="{int(v2) + vbase}"',
+                    f'v3="{int(v3) + vbase}"',
+                ]
+                paints: list = []
                 for attr, val in t.attrib.items():
                     if attr in ("v1", "v2", "v3") or attr in _DROP_ATTRS:
                         continue
@@ -239,12 +276,17 @@ def _merge_object(root_key, objs, src_path, parts: list) -> Optional[_MergedObje
                     paint = _PAINT_ATTRS.get(attr)
                     if paint is not None:
                         if val:
-                            nt.set(paint[0], val)
+                            paints.append((paint[0], val))
                             merged.paint_kinds.add(attr)
                             if attr == "paint_color":
                                 merged.painted += 1
+                    elif "}" in attr:
+                        # A namespaced non-paint extension (geometry already lives in
+                        # v1/v2/v3); no prefix to emit it under, so it is not carried.
+                        continue
                     else:
-                        nt.set(attr, val)
+                        attrs.append(f'{attr}="{_esc_attr(val)}"')
+                tri_append(("<triangle " + " ".join(attrs), paints))
                 tri_count += 1
         vbase += nverts
 
@@ -263,11 +305,8 @@ def _merge_object(root_key, objs, src_path, parts: list) -> Optional[_MergedObje
                     transform=xf,
                 )
             )
+    merged.vert_xml = "\n".join(vert_lines)
     return merged
-
-
-def _paint_attr():
-    return ns.q(ns.SLIC3RPE, "mmu_segmentation")
 
 
 def _used_slots(project: BambuProject, merged: dict) -> set:
@@ -287,10 +326,10 @@ def _used_slots(project: BambuProject, merged: dict) -> set:
                     used.add(int(vol.extruder))
                 except ValueError:
                     pass
-        for tri in mo.element.iter(ns.q(ns.CORE, "triangle")):
-            code = tri.get(_paint_attr())
-            if code:
-                paint_strings.add(code)
+        for _base, paints in mo.tris:
+            for name, val in paints:
+                if name == _MMU_SEG_ATTR and val:
+                    paint_strings.add(val)
     for code in paint_strings:
         try:
             used |= used_states(code) - {0}
@@ -322,7 +361,6 @@ def _compute_extruder_map(project: BambuProject, merged: dict) -> Optional[dict]
 def _apply_extruder_map(merged: dict, mapping: dict) -> None:
     """Rewrite volume extruders and paint bitstreams through the mapping."""
     recoded: dict = {}
-    attr = _paint_attr()
     for mo in merged.values():
         for vol in mo.volumes:
             if vol.extruder:
@@ -330,16 +368,27 @@ def _apply_extruder_map(merged: dict, mapping: dict) -> None:
                     vol.extruder = str(mapping.get(int(vol.extruder), int(vol.extruder)))
                 except ValueError:
                     pass
-        for tri in mo.element.iter(ns.q(ns.CORE, "triangle")):
-            code = tri.get(attr)
-            if not code:
+        tris = mo.tris
+        for i, (base, paints) in enumerate(tris):
+            if not paints:
                 continue
-            if code not in recoded:
-                try:
-                    recoded[code] = transform_states(code, mapping)
-                except PaintError:
-                    recoded[code] = code  # leave unreadable paint untouched
-            tri.set(attr, recoded[code])
+            new_paints = []
+            changed = False
+            for name, val in paints:
+                if name == _MMU_SEG_ATTR:
+                    if val not in recoded:
+                        try:
+                            recoded[val] = transform_states(val, mapping)
+                        except PaintError:
+                            recoded[val] = val  # leave unreadable paint untouched
+                    nv = recoded[val]
+                    if nv != val:
+                        changed = True
+                    new_paints.append((name, nv))
+                else:
+                    new_paints.append((name, val))
+            if changed:
+                tris[i] = (base, new_paints)
 
 
 def write_prusa_3mf(
@@ -409,27 +458,23 @@ def write_prusa_3mf(
     elif translate_settings:
         warnings.append("No Metadata/project_settings.config in the source; settings were not converted.")
 
-    # Build the output model tree.
-    nsmap = {None: ns.CORE, "slic3rpe": ns.SLIC3RPE}
-    model = ET.Element(ns.q(ns.CORE, "model"), nsmap=nsmap)
-    model.set("unit", "millimeter")
-    model.set("{http://www.w3.org/XML/1998/namespace}lang", "en-US")
-
+    # Build the output model as a string. The mesh is never held as an lxml tree: for a
+    # heavily-painted model that tree is millions of element objects and is what stalls
+    # serialization and blows memory. String chunks are cheap to build and to write.
     paint_kinds: set = set()
     for mo in merged.values():
         paint_kinds |= mo.paint_kinds
-    _add_metadata(model, project, paint_kinds)
+    metadata_xml = _add_metadata(project, paint_kinds)
 
-    resources = ET.SubElement(model, ns.q(ns.CORE, "resources"))
     painted_total = 0
     volumes_total = 0
     text_total = 0
+    resource_parts: list = []
     for key, mo in merged.items():
-        mo.element.set("id", id_map[key])
         painted_total += mo.painted
         volumes_total += len(mo.volumes)
         text_total += sum(1 for v in mo.volumes if v.text)
-        resources.append(mo.element)
+        resource_parts.append(_object_xml(mo, id_map[key]))
 
     # Plates: Bambu keeps every plate's objects in one world layout (plates side by
     # side, 20 % apart). Move each selected plate back to its own origin, then put the
@@ -446,26 +491,34 @@ def write_prusa_3mf(
             "in one file: open it in the PrusaSlicer 2.9+ GUI (its command line is not bed-aware)"
         )
 
-    build = ET.SubElement(model, ns.q(ns.CORE, "build"))
+    build_parts: list = []
     items_written = 0
     for bi in selected_items:
         key = _key(ROOT_MODEL, bi.objectid)
         if key not in id_map:
             continue
-        item = ET.SubElement(build, ns.q(ns.CORE, "item"))
-        item.set("objectid", id_map[key])
         plate = project.plate_of_object.get(bi.objectid)
         origin = project.plate_origins.get(plate, (0.0, 0.0))
         shift = (-origin[0] + bed_index.get(plate, 0) * bed_width * (1.0 + PLATE_GAP), -origin[1])
         transform = _shifted_transform(bi.transform, shift)
-        if transform.strip():
-            item.set("transform", transform)
-        item.set("printable", "1" if bi.printable else "0")
+        t_attr = f' transform="{_esc_attr(transform)}"' if transform.strip() else ""
+        build_parts.append(
+            f'<item objectid="{id_map[key]}"{t_attr} printable="{"1" if bi.printable else "0"}"/>'
+        )
         items_written += 1
 
-    model_bytes = ET.tostring(
-        model, xml_declaration=True, encoding="UTF-8", pretty_print=True
-    )
+    model_bytes = (
+        "<?xml version='1.0' encoding='UTF-8'?>\n"
+        f'<model xmlns="{ns.CORE}" xmlns:slic3rpe="{ns.SLIC3RPE}" unit="millimeter" xml:lang="en-US">\n'
+        f"{metadata_xml}\n"
+        "<resources>\n"
+        + "\n".join(resource_parts)
+        + "\n</resources>\n"
+        "<build>\n"
+        + "\n".join(build_parts)
+        + "\n</build>\n"
+        "</model>\n"
+    ).encode("utf-8")
 
     model_config = _build_model_config(project, merged, id_map, full_map, warnings, translate_settings)
 
@@ -550,24 +603,38 @@ def _bed_width(cfg) -> Optional[float]:
     return (max(xs) - min(xs)) if len(xs) >= 3 else None
 
 
-def _add_metadata(model, project: BambuProject, paint_kinds: set) -> None:
-    def meta(name, text):
-        m = ET.SubElement(model, ns.q(ns.CORE, "metadata"))
-        m.set("name", name)
-        m.text = text
-
-    meta("slic3rpe:Version3mf", "1")
+def _add_metadata(project: BambuProject, paint_kinds: set) -> str:
+    """The <model> metadata block as an XML string."""
+    metas = ['<metadata name="slic3rpe:Version3mf">1</metadata>']
     for attr, (_qname, version_key) in _PAINT_ATTRS.items():
         if attr in paint_kinds or attr == "paint_color":
-            meta(version_key, "1")
+            metas.append(f'<metadata name="{version_key}">1</metadata>')
     # Carry over a title if present.
     title = ""
     for md in project.root_tree.getroot().findall(ns.q(ns.CORE, "metadata")):
         if md.get("name") == "Title" and md.text:
             title = md.text
     if title:
-        meta("Title", title)
-    meta("Application", "panda2prusa")
+        metas.append(f'<metadata name="Title">{_esc_text(title)}</metadata>')
+    metas.append('<metadata name="Application">panda2prusa</metadata>')
+    return "\n".join("  " + m for m in metas)
+
+
+def _object_xml(mo: _MergedObject, obj_id: str) -> str:
+    """One merged object as an XML string (the mesh is text, not an lxml tree)."""
+    name_attr = f' name="{_esc_attr(mo.name)}"' if mo.name else ""
+    return (
+        f'<object type="model" id="{obj_id}"{name_attr}>\n'
+        "<mesh>\n"
+        "<vertices>\n"
+        f"{mo.vert_xml}\n"
+        "</vertices>\n"
+        "<triangles>\n"
+        f"{mo.triangle_lines()}\n"
+        "</triangles>\n"
+        "</mesh>\n"
+        "</object>"
+    )
 
 
 def _cfg_meta(parent, mtype: str, mkey: str, value: str) -> None:
@@ -678,7 +745,7 @@ def _build_model_config(
         so = project.settings_objects.get(old_id)
         obj_el = ET.SubElement(root, "object")
         obj_el.set("id", id_map[key])
-        name = (so.name if so else "") or mo.element.get("name", "")
+        name = (so.name if so else "") or mo.name
         if name:
             _cfg_meta(obj_el, "object", "name", name)
         if so and so.extruder:

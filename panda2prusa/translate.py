@@ -178,6 +178,30 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _normalize_color(v: Optional[str]) -> Optional[str]:
+    """Coerce a colour to the 7-char ``#RRGGBB`` form PrusaSlicer accepts.
+
+    PrusaSlicer's ``can_decode_color`` (libslic3r/Color.cpp) only accepts a 7-char
+    string, and ``decode_colors`` rejects the *entire* tool/filament colour vector if
+    any single entry is malformed -- so one 8-char ``#RRGGBBAA`` value (Bambu writes
+    these) makes every tool head render black. Strip the alpha byte and expand
+    ``#RGB`` shorthand so each colour is exactly 7 chars.
+    """
+    if not v:
+        return v
+    s = v.strip()
+    if not s.startswith("#"):
+        return v
+    h = s[1:].replace(" ", "")
+    if len(h) == 8:
+        h = h[:6]
+    elif len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    elif len(h) != 6:
+        return v
+    return "#" + h
+
+
 def _bed_bounds(cfg: PrusaConfig) -> Optional[tuple]:
     pts = cfg.vector("bed_shape") or []
     xs, ys = [], []
@@ -248,6 +272,14 @@ def validate(cfg: PrusaConfig, fallback: PrusaConfig, warnings: list) -> None:
         kind, nullable, enum = info[0], info[1], info[2]
         lo, hi = (info[3], info[4]) if len(info) > 4 else (None, None)
         v = cfg.get(key)
+        if key.endswith("_colour") or key.endswith("_color"):
+            # PrusaSlicer rejects the whole colour vector if one entry is not 7-char
+            # #RRGGBB, so normalise every colour (Bambu emits #RRGGBBAA).
+            if is_vector(key):
+                cfg.set_vector(key, [_normalize_color(x) for x in (cfg.vector(key) or [])])
+            else:
+                cfg.set(key, _normalize_color(v))
+            continue
         if kind in ("string", "strings", "pointsgroups"):
             continue
         if kind in ("float", "int", "percent", "floatorpercent"):
@@ -339,6 +371,13 @@ def translate_project(
         cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in S.PRINT_KEYS])
         cfg.set("print_settings_id", target.print_base_name)
         _apply_filament_presets(bambu, cfg, n_ext, slot_of_extruder, target)
+        # Supports are a close feature match (Bambu tree -> Prusa organic), so they
+        # travel with the model even though the rest of the process stays with the
+        # user's preset.
+        _apply_supports(bambu, cfg, warnings)
+        # Wall count, infill density and infill pattern are exact/close 1:1 matches,
+        # so they travel with the model too (overriding the preset's own values).
+        _apply_quality(bambu, cfg, warnings)
     else:
         if target.print_base is not None:
             cfg.update_from(target.print_base, keys=[k for k in target.print_base.keys() if k in S.PRINT_KEYS])
@@ -447,6 +486,89 @@ def _apply_print_rules(
         v = bambu.scalar("fill_density")
         if v and not bambu.has("sparse_infill_density"):
             cfg.set("fill_density", v if v.endswith("%") else v + "%")
+
+
+# -- supports (preset mode) -----------------------------------------------------------------
+
+# Support keys carried over in preset mode. Supports are a close feature match (Bambu
+# tree -> Prusa organic), so they travel with the model even when the rest of the process
+# stays with the user's Prusa preset. Speeds, extrusion widths and the support-filament
+# choice are hardware-specific and are deliberately left to the preset.
+_SUPPORT_TRANSFER_KEYS = frozenset({
+    "support_material_threshold",
+    "support_material_pattern",
+    "support_material_spacing",
+    "support_material_interface_layers",
+    "support_material_bottom_interface_layers",
+    "support_material_interface_pattern",
+    "support_material_interface_spacing",
+    "support_material_contact_distance",
+    "support_material_bottom_contact_distance",
+    "support_material_xy_spacing",
+    "support_material_enforce_layers",
+    "support_material_buildplate_only",
+    "support_tree_angle",
+    "support_tree_branch_diameter",
+    "support_tree_branch_diameter_angle",
+    "support_tree_branch_distance",
+    "support_tree_tip_diameter",
+    "support_tree_top_rate",
+})
+
+
+def _apply_supports(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> None:
+    """Carry the Bambu project's support settings onto ``cfg`` (preset mode).
+
+    Sets support on/off, the style (tree -> organic) and the geometry that defines how
+    the supports are generated. Skipped entirely when the project has no
+    ``enable_support`` key (nothing to carry over).
+    """
+    if not bambu.has("enable_support"):
+        return
+    enabled = K.to_bool(bambu.scalar("enable_support") or "0") or "0"
+    cfg.set("support_material", enabled)
+    if enabled != "1":
+        return  # supports off: nothing else to carry over
+    for k, v in _support_values(bambu.scalar("support_type"), bambu.scalar("support_style")).items():
+        cfg.set(k, v)
+    by_prusa = {r.prusa: r for r in K.PRINT_RULES}
+    for prusa_key in _SUPPORT_TRANSFER_KEYS:
+        rule = by_prusa.get(prusa_key)
+        if rule is None or not bambu.has(rule.bambu):
+            continue
+        v = _apply_rule(rule, bambu.scalar(rule.bambu), cfg, warnings)
+        if v is not None:
+            cfg.set(prusa_key, v)
+
+
+# -- wall / infill quality (preset mode) ----------------------------------------------------
+
+# Wall count, infill density and infill pattern are exact or close 1:1 matches between
+# Bambu and PrusaSlicer, so they travel with the model in preset mode, overriding the
+# user's preset values. Speeds and extrusion widths are hardware-specific and stay with
+# the preset. An infill pattern with no Prusa equivalent falls back to the preset value
+# (with a warning) rather than being dropped.
+_QUALITY_TRANSFER_KEYS = frozenset({
+    "perimeters",
+    "fill_density",
+    "fill_pattern",
+})
+
+
+def _apply_quality(bambu: BambuConfig, cfg: PrusaConfig, warnings: list) -> None:
+    """Carry the Bambu project's wall/infill settings onto ``cfg`` (preset mode).
+
+    Each key is only written when the project's config actually contains it, so a model
+    that omits a setting keeps the user's preset value for that one.
+    """
+    by_prusa = {r.prusa: r for r in K.PRINT_RULES}
+    for prusa_key in _QUALITY_TRANSFER_KEYS:
+        rule = by_prusa.get(prusa_key)
+        if rule is None or not bambu.has(rule.bambu):
+            continue
+        v = _apply_rule(rule, bambu.scalar(rule.bambu), cfg, warnings)
+        if v is not None:
+            cfg.set(prusa_key, v)
 
 
 # -- filament ---------------------------------------------------------------------------------
