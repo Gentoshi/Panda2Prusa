@@ -26,6 +26,9 @@ the model's own settings into the converted file and fixes two bugs:
 - **Opens in PrusaSlicer 3.x with settings** — the output is tagged as a 2.9.7 project, so
   PrusaSlicer 3.x loads it through its legacy path and applies all settings (without this,
   3.x only read the geometry).
+- **Drag-and-drop conversion** — `convert_to_prusa.bat` (repo root) converts any `.3mf`
+  dropped onto it to `<name>_prusa.3mf` next to the source, non-interactively, with Bambu
+  slot N kept on tool N (no renumbering).
 
 Everything else works as in the upstream; the full feature list is below.
 
